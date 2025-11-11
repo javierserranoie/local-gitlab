@@ -1,0 +1,241 @@
+# GitLab Helm Chart Values
+# Customize these values for your GitLab installation in the "dev" namespace
+
+# Global settings
+global:
+  # Configure the GitLab domain
+  hosts:
+    domain: dev.local
+    gitlab:
+      name: gitlab.dev.local
+    registry:
+      name: registry.dev.local
+    minio:
+      name: minio.dev.local
+  
+  # Configure ingress for Traefik
+  ingress:
+    configureCertmanager: false
+    class: traefik
+    # Traefik-specific annotations (matching ../ingress.yaml configuration)
+    # Note: kubernetesingress provider requires kubernetes.io/ingress.class annotation
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+      # (optional) if you have a certresolver configured in Traefik, add:
+      # traefik.ingress.kubernetes.io/router.tls: "true"
+      # traefik.ingress.kubernetes.io/router.tls.certresolver: letsencrypt
+  
+  # Configure PostgreSQL
+  postgresql:
+    install: true
+  
+  # Configure Redis
+  redis:
+    install: true
+  
+  # Configure MinIO (object storage)
+  minio:
+    install: true
+  
+  # Configure GitLab Shell
+  shell:
+    port: 22
+  
+  # Configure GitLab Pages
+  pages:
+    enabled: false
+  
+  # Configure GitLab Runner
+  gitlab-runner:
+    install: true
+
+# Disable cert-manager installation (already exists in cluster)
+cert-manager:
+  install: false
+  installCRDs: false
+
+# Disable nginx-ingress controller (using Traefik instead)
+nginx-ingress:
+  enabled: false
+
+# GitLab Rails configuration
+gitlab:
+  # GitLab version
+  image:
+    tag: "latest"
+  
+  # Webservice ingress configuration (matching ../ingress.yaml)
+  webservice:
+    ingress:
+      annotations:
+        traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+        kubernetes.io/ingress.class: traefik
+        kubernetes.io/ingress.provider: traefik
+        # Traefik-specific middleware annotations (if needed)
+        traefik.ingress.kubernetes.io/router.middlewares: ""
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1000m"
+      limits:
+        memory: "4Gi"
+        cpu: "2000m"
+  
+  # Sidekiq configuration
+  sidekiq:
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+  
+  # Gitaly configuration
+  gitaly:
+    persistence:
+      enabled: true
+      size: 50Gi
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+
+# PostgreSQL configuration
+postgresql:
+  image:
+    tag: "16"
+  persistence:
+    enabled: true
+    size: 20Gi
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+# Redis configuration
+redis:
+  # Use default Redis image from GitLab chart (remove tag override)
+  # image:
+  #   tag: "7.2.1-debian-12-r0"
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "250m"
+
+# MinIO configuration
+minio:
+  persistence:
+    enabled: true
+    size: 20Gi
+  # MinIO ingress configuration (matching ../ingress.yaml)
+  ingress:
+    enabled: true
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+# Registry configuration
+registry:
+  enabled: true
+  # Registry ingress configuration (matching ../ingress.yaml)
+  ingress:
+    enabled: true
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+# GitLab Runner configuration
+gitlab-runner:
+  # Runner configuration
+  runners:
+    # Runner tags (can be used to target specific runners in CI/CD jobs)
+    tags: "kubernetes,docker"
+    # Run untagged jobs (set to false to only run tagged jobs)
+    runUntagged: true
+    # Lock runner to a specific project (leave empty to allow all projects)
+    locked: false
+    # Maximum number of concurrent jobs per runner
+    concurrent: 4
+    # Request timeout for jobs
+    requestTimeout: 3600
+    # Kubernetes executor configuration (TOML format)
+    # Note: The Helm chart automatically handles runner registration with GitLab
+    config: |
+      [[runners]]
+        executor = "kubernetes"
+        [runners.kubernetes]
+          namespace = "{{.Release.Namespace}}"
+          image = "docker:24-dind"
+          privileged = true
+          # Resource limits for job pods
+          cpu_limit = "2"
+          memory_limit = "4Gi"
+          cpu_request = "500m"
+          memory_request = "1Gi"
+          # Service account for job pods
+          service_account = "gitlab-runner"
+          # Pull policy for images
+          image_pull_policy = "if-not-present"
+          # Helper image (used for cloning repos, etc.)
+          helper_image = "gitlab/gitlab-runner-helper:latest"
+          # Cache configuration (uses MinIO)
+          [runners.cache]
+            Type = "s3"
+            Shared = true
+            [runners.cache.s3]
+              ServerAddress = "minio.{{.Release.Namespace}}.svc.cluster.local:9000"
+              BucketName = "gitlab-runner-cache"
+              Insecure = true
+  
+  # Resource limits for the runner pod itself
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  
+  # RBAC configuration (creates ServiceAccount, Role, RoleBinding)
+  rbac:
+    create: true
+    rules:
+      - apiGroups: [""]
+        resources: ["pods", "pods/exec", "pods/log", "pods/attach"]
+        verbs: ["list", "get", "watch", "create", "update", "patch", "delete"]
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["list", "get", "watch"]
+  
+  # Service account configuration
+  serviceAccount:
+    create: true
+    name: gitlab-runner

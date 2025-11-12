@@ -383,3 +383,132 @@ registry-token SCOPE="all" REPO="":
     echo ""
     echo "To use with Docker, login with:"
     echo "  docker login {{REGISTRY_DOMAIN}} -u {{GITLAB_USER}} -p \${GITLAB_TOKEN}"
+
+install-gitlab-runner-cli:
+    # Download the binary for your system
+    sudo curl -L --output /usr/local/bin/gitlab-runner https://gitlab-runner-downloads.s3.amazonaws.com/latest/binaries/gitlab-runner-linux-amd64
+
+    # Give it permission to execute
+    sudo chmod +x /usr/local/bin/gitlab-runner
+
+    # Create a GitLab Runner user
+    sudo useradd --comment 'GitLab Runner' --create-home gitlab-runner --shell /bin/bash
+
+    # Install and run as a service
+    sudo gitlab-runner install --user=gitlab-runner --working-directory=/home/gitlab-runner
+    sudo gitlab-runner start
+
+# Register a GitLab runner locally with TLS certificate handling
+# Usage: just register-runner TOKEN [EXECUTOR] [DESCRIPTION]
+#   TOKEN: Runner registration token (required)
+#   EXECUTOR: Runner executor (default: shell)
+#   DESCRIPTION: Runner description (default: "Local Runner")
+register-runner TOKEN EXECUTOR="shell" DESCRIPTION="Local Runner":
+    #!/usr/bin/env bash
+    set -e
+    echo "=== Registering GitLab Runner ==="
+    echo "URL: https://{{GITLAB_DOMAIN}}"
+    echo "Token: {{TOKEN}}"
+    echo "Executor: {{EXECUTOR}}"
+    echo "Description: {{DESCRIPTION}}"
+    echo ""
+    
+    # Check if gitlab-runner is installed
+    if ! command -v gitlab-runner &> /dev/null; then
+        echo "Error: gitlab-runner is not installed or not in PATH"
+        echo "Install it with: just install-gitlab-runner-cli"
+        exit 1
+    fi
+    
+    # Create temporary empty CA file for development (skips TLS verification)
+    CA_FILE=$(mktemp)
+    touch "$CA_FILE"
+    echo "Using empty CA file for development (TLS verification will be skipped)"
+    echo ""
+    
+    # Determine config file location based on user-mode or system-mode
+    if [ -w "/etc/gitlab-runner/config.toml" ] 2>/dev/null; then
+        CONFIG_FILE="/etc/gitlab-runner/config.toml"
+        RUNNER_MODE="system"
+    else
+        CONFIG_FILE="$HOME/.gitlab-runner/config.toml"
+        RUNNER_MODE="user"
+        mkdir -p "$(dirname "$CONFIG_FILE")"
+    fi
+    
+    echo "Config file location: $CONFIG_FILE"
+    echo "Runner mode: $RUNNER_MODE"
+    echo ""
+    
+    # Try to register with HTTPS first
+    echo "Attempting to register runner with HTTPS..."
+    if gitlab-runner register \
+      --url "https://{{GITLAB_DOMAIN}}" \
+      --token "{{TOKEN}}" \
+      --tls-ca-file "$CA_FILE" \
+      --executor "{{EXECUTOR}}" \
+      --description "{{DESCRIPTION}}" \
+      --non-interactive 2>&1; then
+        REGISTERED=true
+    else
+        REGISTERED=false
+        echo ""
+        echo "HTTPS registration failed (likely due to TLS certificate mismatch)."
+        echo "Attempting to register with HTTP..."
+        echo ""
+        
+        # Try HTTP instead
+        if gitlab-runner register \
+          --url "http://{{GITLAB_DOMAIN}}" \
+          --token "{{TOKEN}}" \
+          --executor "{{EXECUTOR}}" \
+          --description "{{DESCRIPTION}}" \
+          --non-interactive 2>&1; then
+            REGISTERED=true
+        else
+            REGISTERED=false
+            echo ""
+            echo "Both HTTPS and HTTP registration failed."
+            echo "You may need to manually register the runner."
+            rm -f "$CA_FILE"
+            exit 1
+        fi
+    fi
+    
+    # Clean up temp file
+    rm -f "$CA_FILE"
+    
+    # Update config file to skip TLS verification for development (if using HTTPS)
+    if [ -f "$CONFIG_FILE" ] && grep -q "https://{{GITLAB_DOMAIN}}" "$CONFIG_FILE"; then
+        echo ""
+        echo "Updating config file to skip TLS verification for development..."
+        # Check if tls-ca-file is already set
+        if ! grep -q "tls-ca-file" "$CONFIG_FILE"; then
+            # Add tls-ca-file = "" to skip TLS verification
+            # Use awk to add tls-ca-file after [[runners]] (most portable)
+            TMP_FILE=$(mktemp)
+            awk '/\[\[runners\]\]/ {print; print "  tls-ca-file = \"\""; next}1' "$CONFIG_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$CONFIG_FILE"
+            echo "Config updated: TLS verification disabled"
+        fi
+        echo "Config file: $CONFIG_FILE"
+    fi
+    
+    echo ""
+    echo "=== Runner Registration Complete ==="
+    echo ""
+    echo "To start the runner:"
+    if [ "$RUNNER_MODE" = "system" ]; then
+        echo "  sudo gitlab-runner start"
+    else
+        echo "  gitlab-runner start"
+    fi
+    echo ""
+    echo "To verify the runner is running:"
+    if [ "$RUNNER_MODE" = "system" ]; then
+        echo "  sudo gitlab-runner status"
+    else
+        echo "  gitlab-runner status"
+    fi
+    echo ""
+    echo "Note: TLS verification is disabled for development. For production,"
+    echo "configure proper CA certificates in: $CONFIG_FILE"

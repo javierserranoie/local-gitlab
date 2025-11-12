@@ -1,0 +1,24 @@
+concurrent = 1
+check_interval = 0
+shutdown_timeout = 0
+
+[session_server]
+  session_timeout = 1800
+
+[[runners]]
+  name = "docker-dind-runner"
+  url = "http://gitlab.dev.local/"  # Replace with your GitLab instance URL
+  token = ""  # Replace with your actual runner token
+  executor = "docker"
+  environment = [
+    "GIT_SSL_NO_VERIFY=true",
+    "GIT_HTTP_SSL_VERIFY=false"
+  ]
+
+  [runners.docker]
+    image = "docker:dind"
+    privileged = true
+    volumes = ["/cache"]
+    # Optional: if you need to use host docker socket instead of dind
+    # volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/cache"]
+    extra_hosts = ["gitlab.dev.local:100.100.100.100"] # replace with gitlab's ingress ip 

@@ -299,6 +299,239 @@ kubectl get events -n dev --sort-by='.lastTimestamp'
    kubectl exec -n dev $(kubectl get pods -n dev -l app=toolbox -o jsonpath='{.items[0].metadata.name}') -- gitlab-rails runner "u = User.find_by_username('root'); u.password = 'password123'; u.password_confirmation = 'password123'; u.skip_confirmation!; u.unlock_access!; u.save!; puts 'Password reset complete'"
    ```
 
+## Configure Gitlab Runner
+
+### Registering a Runner (Local Installation)
+
+If you're registering a GitLab runner locally (outside the Kubernetes cluster), you may encounter TLS certificate verification errors because Traefik uses certificates that don't match `gitlab.dev.local`.
+
+#### Option 1: Use HTTP Instead of HTTPS (Easiest for Development)
+
+The simplest solution for development is to register using HTTP:
+
+```bash
+gitlab-runner register \
+  --url http://gitlab.dev.local \
+  --token YOUR_RUNNER_TOKEN \
+  --executor shell \
+  --description "Local Runner" \
+  --non-interactive
+```
+
+**Note:** Make sure GitLab is accessible via HTTP. If you're using Traefik, ensure the `web` entrypoint (HTTP) is enabled.
+
+#### Option 1b: Skip TLS Verification (If HTTP Doesn't Work)
+
+If you must use HTTPS, you can manually create the config file to skip TLS verification:
+
+1. **First, create the config file manually:**
+
+```bash
+# Determine config location (user-mode vs system-mode)
+CONFIG_FILE="$HOME/.gitlab-runner/config.toml"  # For user-mode
+# Or: CONFIG_FILE="/etc/gitlab-runner/config.toml"  # For system-mode
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
+```
+
+2. **Create the config file with TLS verification disabled:**
+
+```bash
+cat > "$CONFIG_FILE" << EOF
+concurrent = 1
+check_interval = 0
+
+[[runners]]
+  name = "Local Runner"
+  url = "https://gitlab.dev.local"
+  token = "YOUR_RUNNER_TOKEN"
+  executor = "shell"
+  tls-ca-file = ""
+EOF
+```
+
+3. **Verify the runner can connect:**
+
+```bash
+# For user-mode
+gitlab-runner verify
+
+# For system-mode
+sudo gitlab-runner verify
+```
+
+4. **Start the runner:**
+
+```bash
+# For user-mode
+gitlab-runner run
+
+# For system-mode
+sudo gitlab-runner start
+```
+
+#### Option 2: Get Traefik CA Certificate
+
+If you want to properly verify the certificate, you can extract the CA certificate from Traefik:
+
+```bash
+# Get the Traefik certificate secret
+kubectl get secret -n kube-system -o jsonpath='{.items[?(@.metadata.name=="traefik-default-cert")].data.tls\.crt}' | base64 -d > /tmp/traefik-cert.crt
+
+# Or if using a different certificate provider, find the secret:
+kubectl get secrets -n kube-system | grep traefik
+
+# Then use it during registration
+gitlab-runner register \
+  --url https://gitlab.dev.local \
+  --token YOUR_RUNNER_TOKEN \
+  --tls-ca-file /tmp/traefik-cert.crt \
+  --executor shell \
+  --description "Local Runner"
+```
+
+#### Option 3: Use the Justfile Command
+
+You can use the convenient `just` command to register a runner:
+
+```bash
+just register-runner YOUR_RUNNER_TOKEN
+```
+
+This command handles TLS certificate issues automatically for development environments.
+
+### Getting a Runner Registration Token
+
+To get a runner registration token:
+
+1. **For a specific project:**
+   - Go to your project → Settings → CI/CD → Runners
+   - Copy the registration token
+
+2. **For a group:**
+   - Go to your group → Settings → CI/CD → Runners
+   - Copy the registration token
+
+3. **For instance-level (shared runners):**
+   - Go to Admin Area → CI/CD → Runners
+   - Copy the registration token
+
+### Runner Configuration File Location
+
+- **System-mode:** `/etc/gitlab-runner/config.toml`
+- **User-mode:** `~/.gitlab-runner/config.toml`
+
+### Troubleshooting Runner Issues
+
+#### Runner Stuck at "Initializing executor providers"
+
+**Note:** The message "Initializing executor providers" followed by "builds=0 max_builds=1" is **normal behavior**. The runner initializes and then waits for jobs. It's not stuck - it's waiting for CI/CD jobs to be assigned.
+
+If you want to see more activity, you can:
+- Check the GitLab UI to see if the runner is online (Settings → CI/CD → Runners)
+- Trigger a CI/CD pipeline to test if the runner picks up jobs
+- Check system logs if running as a service: `sudo journalctl -u gitlab-runner -f`
+- Verify the runner connection: `gitlab-runner verify`
+
+If the runner is **truly stuck** (no response, high CPU usage, or errors), try these solutions:
+
+1. **Check if GitLab is accessible:**
+   ```bash
+   curl -v http://gitlab.dev.local
+   gitlab-runner verify
+   ```
+
+2. **Verify the runner configuration:**
+   ```bash
+   # Check config file
+   cat ~/.gitlab-runner/config.toml
+   
+   # Or for system-mode
+   sudo cat /etc/gitlab-runner/config.toml
+   ```
+
+3. **Check for multiple runner processes:**
+   ```bash
+   ps aux | grep gitlab-runner
+   ```
+   If multiple runners are running, stop the ones you don't need:
+   ```bash
+   # Stop user-mode runner
+   pkill -f "gitlab-runner run"
+   
+   # Or stop system-mode runner
+   sudo systemctl stop gitlab-runner
+   ```
+
+4. **Check logs to see what's happening:**
+   ```bash
+   # Check system service logs (if running as system service)
+   sudo journalctl -u gitlab-runner -f
+   
+   # For user-mode, logs go to stdout/stderr where you run the command
+   # You can redirect to a file:
+   gitlab-runner run > /tmp/gitlab-runner.log 2>&1
+   
+   # Verify the runner can connect to GitLab
+   gitlab-runner verify
+   ```
+
+5. **Check if the shell executor can initialize:**
+   The shell executor should work immediately. If it's hanging, try:
+   - Ensure your shell environment is properly configured
+   - Check that basic commands (`sh`, `bash`) are available
+   - Verify file permissions in the working directory
+
+6. **Try restarting the runner:**
+   ```bash
+   # Kill the stuck process
+   pkill -f "gitlab-runner run"
+   
+   # Wait a moment
+   sleep 2
+   
+   # Start again
+   gitlab-runner run
+   ```
+
+7. **Check GitLab runner logs:**
+   ```bash
+   # User-mode logs are typically in stdout/stderr
+   # System-mode logs:
+   sudo journalctl -u gitlab-runner -f
+   ```
+
+8. **If using shell executor, ensure it's properly configured:**
+   The config should have:
+   ```toml
+   [[runners]]
+     executor = "shell"
+   ```
+   No additional shell executor configuration is needed for basic usage.
+
+#### Runner Not Picking Up Jobs
+
+If the runner is running but not picking up jobs:
+
+1. **Check runner status in GitLab UI:**
+   - Go to your project → Settings → CI/CD → Runners
+   - Verify the runner shows as "online" and "active"
+
+2. **Check runner tags match job tags:**
+   - If your job has `tags: [docker]`, ensure the runner has the `docker` tag
+   - Or set `runUntagged: true` in the runner config
+
+3. **Verify runner is not locked to a specific project:**
+   ```toml
+   [[runners]]
+     locked = false  # Should be false for shared runners
+   ```
+
+4. **Check concurrent job limits:**
+   ```toml
+   concurrent = 1  # Increase if you want multiple concurrent jobs
+   ```
+
 ## Additional Resources
 
 - [GitLab Helm Chart Documentation](https://docs.gitlab.com/charts/)

@@ -92,7 +92,23 @@ kubectl get secret gitlab-gitlab-initial-root-password -n dev -o jsonpath='{.dat
    - Username: `root`
    - Password: `password123` (default, set automatically during installation)
 
-### 6. Access GitLab Container Registry
+### 6. SSH Access for Git Push
+
+SSH access is automatically configured during installation. The `just install` command:
+- Configures Traefik with SSH entrypoint (port 22)
+- Creates the SSH IngressRouteTCP resource
+
+Test SSH connection:
+```bash
+ssh -T git@gitlab.dev.local
+```
+
+Use SSH for git operations:
+```bash
+git clone git@gitlab.dev.local:username/project.git
+```
+
+### 7. Access GitLab Container Registry
 
 The GitLab Container Registry uses JWT authentication. You need to obtain a JWT token from GitLab first, then use it to access the registry.
 
@@ -184,7 +200,7 @@ docker login registry.dev.local -u root -p YOUR_PERSONAL_ACCESS_TOKEN
 - `namespace.yaml` - Kubernetes namespace definition
 - `ingressclass.yaml` - Traefik IngressClass resource (required for ingress routing)
 - `values.yaml` - GitLab Helm chart values
-- `justfile` - Installation and uninstallation recipes
+- `justfile` - Installation, uninstallation, and management recipes (includes SSH configuration)
 
 ### Common Customizations
 

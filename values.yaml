@@ -8,6 +8,7 @@ global:
     domain: dev.local
     gitlab:
       name: gitlab.dev.local
+    ssh: gitlab.dev.local
     registry:
       name: registry.dev.local
     minio:

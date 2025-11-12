@@ -42,9 +42,23 @@ install:
     echo "Creating namespace {{NAMESPACE}}..."
     kubectl apply -f namespace.yaml
     
-    # Create Traefik IngressClass (required for Traefik ingress controller)
+    # Create Traefik IngressClass and SSH IngressRouteTCP
     echo "Creating Traefik IngressClass..."
-    kubectl apply -f ingressclass.yaml || echo "IngressClass already exists, skipping..."
+    kubectl apply -f ingressclass.yaml || echo "Ingress resources already exist, skipping..."
+    
+    # Configure Traefik with SSH entrypoint
+    echo "Configuring Traefik with SSH entrypoint..."
+    # Check if SSH entrypoint already exists
+    if ! kubectl get deployment traefik -n kube-system -o yaml | grep -q "entryPoints.ssh.address"; then
+        echo "Adding SSH entrypoint to Traefik..."
+        kubectl patch deployment traefik -n kube-system --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--entryPoints.ssh.address=:22/tcp"}]' || echo "Failed to add SSH entrypoint arg"
+        kubectl patch deployment traefik -n kube-system --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/ports/-", "value": {"containerPort": 22, "name": "ssh", "protocol": "TCP"}}]' || echo "Failed to add SSH container port"
+        kubectl patch svc traefik -n kube-system --type='json' -p='[{"op": "add", "path": "/spec/ports/-", "value": {"name": "ssh", "port": 22, "protocol": "TCP", "targetPort": 22}}]' || echo "Failed to add SSH service port"
+        echo "Waiting for Traefik to restart..."
+        kubectl rollout status deployment/traefik -n kube-system --timeout=2m || echo "Traefik rollout timeout"
+    else
+        echo "SSH entrypoint already configured"
+    fi
     
     # Add GitLab Helm repository
     echo "Adding GitLab Helm repository..."
@@ -99,6 +113,13 @@ install:
         echo "Toolbox pod not found, password reset skipped"
     fi
     
+    # Apply SSH ingress route (after GitLab Shell service exists)
+    echo ""
+    echo "Waiting for GitLab Shell service..."
+    kubectl wait --for=condition=ready pod -l app=gitlab-shell -n {{NAMESPACE}} --timeout=300s 2>/dev/null || echo "GitLab Shell not ready yet, continuing..."
+    echo "Applying SSH ingress route..."
+    kubectl apply -f ingressclass.yaml || echo "SSH ingress route skipped"
+    
     echo ""
     echo "=== Installation Complete ==="
     echo ""
@@ -120,6 +141,9 @@ install:
     echo "Note: If you encounter 404 errors, ensure the Traefik IngressClass exists:"
     echo "  kubectl get ingressclass traefik"
     echo "If missing, create it with: kubectl apply -f ingressclass.yaml"
+    echo ""
+    echo "For SSH access (git push over SSH):"
+    echo "  Test: ssh -T git@{{GITLAB_DOMAIN}}"
 
 # Uninstall GitLab Helm release
 uninstall:
